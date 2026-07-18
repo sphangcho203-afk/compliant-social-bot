@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "compliant-social-bot"
 version = "0.1.0"
@@ -18,6 +22,9 @@ youtube = [
   "google-auth>=2.34",
   "google-auth-oauthlib>=1.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["social_bot*"]
 
 [tool.ruff]
 line-length = 100
