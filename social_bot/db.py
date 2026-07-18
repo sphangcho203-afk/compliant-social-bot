@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  kind TEXT NOT NULL,
  payload_json TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'queued',
+ approved INTEGER NOT NULL DEFAULT 0,
  attempts INTEGER NOT NULL DEFAULT 0,
  run_after TEXT,
  locked_at TEXT,
@@ -84,10 +85,18 @@ class Database:
         db = await self.connect()
         try:
             await db.executescript(SCHEMA)
-            cursor = await db.execute("PRAGMA table_info(publications)")
-            columns = {row[1] for row in await cursor.fetchall()}
-            if "remote_url" not in columns:
+
+            publication_cursor = await db.execute("PRAGMA table_info(publications)")
+            publication_columns = {row[1] for row in await publication_cursor.fetchall()}
+            if "remote_url" not in publication_columns:
                 await db.execute("ALTER TABLE publications ADD COLUMN remote_url TEXT")
+
+            job_cursor = await db.execute("PRAGMA table_info(jobs)")
+            job_columns = {row[1] for row in await job_cursor.fetchall()}
+            if "approved" not in job_columns:
+                await db.execute(
+                    "ALTER TABLE jobs ADD COLUMN approved INTEGER NOT NULL DEFAULT 0"
+                )
             await db.commit()
         finally:
             await db.close()
@@ -138,7 +147,7 @@ class Database:
                   AND status = 'published'
                   AND remote_id IS NOT NULL
                   AND remote_id NOT LIKE 'dry-run:%'
-                ORDER BY published_at ASC, id ASC
+                ORDER BY id
                 """,
                 (platform,),
             )
