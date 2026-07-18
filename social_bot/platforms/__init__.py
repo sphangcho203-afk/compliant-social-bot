@@ -1,0 +1,1 @@
+"""Official platform API adapters."""
