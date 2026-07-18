@@ -14,8 +14,8 @@ It supports:
 - SQLite-backed jobs, assets, publications, football events, and analytics;
 - FFmpeg subprocess orchestration;
 - HTTP 429 handling with exponential backoff;
-- configurable 48–72 hour publishing cooldowns;
-- dry-run mode and approval gates;
+- configurable publishing cooldowns;
+- scheduled jobs, duplicate protection, dry-run mode, and approval gates;
 - gradual performance-based content weighting.
 
 ## Development status
@@ -64,7 +64,7 @@ social-bot publish-youtube clip.mp4 \
 
 Use `--privacy public` only after verifying the uploaded file, metadata, account, and audience settings. The command never obtains credentials from browser cookies.
 
-## Approved publication queue
+## Approved and scheduled publication queue
 
 Queue an owned video. New jobs are unapproved by default and cannot be claimed by the publisher:
 
@@ -74,6 +74,16 @@ social-bot queue-youtube clip.mp4 \
   --caption "Owned or licensed media"
 ```
 
+Schedule the earliest eligible processing time with a timezone-aware ISO-8601 timestamp:
+
+```bash
+social-bot queue-youtube clip.mp4 \
+  --title "Scheduled upload" \
+  --run-after 2026-07-20T18:00:00Z
+```
+
+The queue creates a SHA-256 idempotency key from the video bytes and publishing metadata. Repeating an identical request returns the existing job instead of creating a duplicate. Use `--allow-duplicate` only when publishing the same media and metadata again is intentional.
+
 Approve the returned job ID, then process one approved job. Omit `--live` to validate the full flow without uploading anything:
 
 ```bash
@@ -81,7 +91,13 @@ social-bot approve-job JOB_ID
 social-bot run-youtube-publisher
 ```
 
-After local OAuth is configured, use `social-bot run-youtube-publisher --live` to process one approved job as an unlisted upload. Failed jobs record their error and retry up to five total attempts.
+Live worker runs enforce a 48-hour YouTube cooldown by default and leave the queued job untouched while the cooldown is active:
+
+```bash
+social-bot run-youtube-publisher --live
+```
+
+Change the interval with `--cooldown-hours HOURS`. A value of `0` disables the cooldown. Failed jobs record their error and retry up to five total attempts.
 
 ## YouTube analytics
 
