@@ -85,8 +85,7 @@ class Database:
         try:
             await db.executescript(SCHEMA)
             cursor = await db.execute("PRAGMA table_info(publications)")
-            rows = await cursor.fetchall()
-            columns = {row[1] for row in rows}
+            columns = {row[1] for row in await cursor.fetchall()}
             if "remote_url" not in columns:
                 await db.execute("ALTER TABLE publications ADD COLUMN remote_url TEXT")
             await db.commit()
@@ -125,5 +124,50 @@ class Database:
             if publication_cursor.lastrowid is None:
                 raise RuntimeError("Database did not return a publication ID")
             return publication_cursor.lastrowid
+        finally:
+            await db.close()
+
+    async def list_remote_ids(self, platform: str) -> list[str]:
+        db = await self.connect()
+        try:
+            cursor = await db.execute(
+                """
+                SELECT DISTINCT remote_id
+                FROM publications
+                WHERE platform = ?
+                  AND status = 'published'
+                  AND remote_id IS NOT NULL
+                  AND remote_id NOT LIKE 'dry-run:%'
+                ORDER BY published_at ASC, id ASC
+                """,
+                (platform,),
+            )
+            return [str(row[0]) for row in await cursor.fetchall()]
+        finally:
+            await db.close()
+
+    async def record_metrics(
+        self,
+        *,
+        platform: str,
+        remote_id: str,
+        views: int,
+        likes: int,
+        comments: int,
+    ) -> int:
+        db = await self.connect()
+        try:
+            cursor = await db.execute(
+                """
+                INSERT INTO media_performance (
+                    platform, remote_id, niche, humor_style, views, likes, comments
+                ) VALUES (?, ?, 'unspecified', 'unspecified', ?, ?, ?)
+                """,
+                (platform, remote_id, views, likes, comments),
+            )
+            await db.commit()
+            if cursor.lastrowid is None:
+                raise RuntimeError("Database did not return a metrics snapshot ID")
+            return cursor.lastrowid
         finally:
             await db.close()

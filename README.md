@@ -64,6 +64,24 @@ social-bot publish-youtube clip.mp4 \
 
 Use `--privacy public` only after verifying the uploaded file, metadata, account, and audience settings. The command never obtains credentials from browser cookies.
 
+## YouTube analytics
+
+Fetch one video's current views, likes, and comments and store a timestamped snapshot:
+
+```bash
+social-bot sync-youtube-analytics \
+  --video-id VIDEO_ID \
+  --db data/social_bot.db
+```
+
+Sync every live YouTube publication in the database:
+
+```bash
+social-bot sync-youtube-analytics --all --db data/social_bot.db
+```
+
+Dry-run publication IDs are automatically excluded. Each execution creates a new historical row in `media_performance`, allowing later trend calculations without overwriting earlier observations.
+
 ## Continuous integration
 
 GitHub Actions runs Ruff and the test suite on Python 3.12 and 3.13 for pushes and pull requests.
