@@ -81,14 +81,17 @@ class Database:
         return db
 
     async def initialize(self) -> None:
-        async with await self.connect() as db:
+        db = await self.connect()
+        try:
             await db.executescript(SCHEMA)
-            columns = {
-                row[1] for row in await db.execute_fetchall("PRAGMA table_info(publications)")
-            }
+            cursor = await db.execute("PRAGMA table_info(publications)")
+            rows = await cursor.fetchall()
+            columns = {row[1] for row in rows}
             if "remote_url" not in columns:
                 await db.execute("ALTER TABLE publications ADD COLUMN remote_url TEXT")
             await db.commit()
+        finally:
+            await db.close()
 
     async def record_publication(
         self,
@@ -100,7 +103,8 @@ class Database:
         status: str,
         caption: str,
     ) -> int:
-        async with await self.connect() as db:
+        db = await self.connect()
+        try:
             asset_cursor = await db.execute(
                 """
                 INSERT INTO assets (local_path, license, owner_verified, niche, status)
@@ -121,3 +125,5 @@ class Database:
             if publication_cursor.lastrowid is None:
                 raise RuntimeError("Database did not return a publication ID")
             return publication_cursor.lastrowid
+        finally:
+            await db.close()
