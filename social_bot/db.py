@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import aiosqlite
 
 SCHEMA = '''
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS publications (
  platform TEXT NOT NULL,
  asset_id INTEGER NOT NULL,
  remote_id TEXT,
+ remote_url TEXT,
  status TEXT NOT NULL,
  scheduled_at TEXT,
  published_at TEXT,
@@ -72,6 +74,7 @@ class Database:
         self.path = path
 
     async def connect(self) -> aiosqlite.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         db = await aiosqlite.connect(self.path)
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys=ON")
@@ -80,4 +83,41 @@ class Database:
     async def initialize(self) -> None:
         async with await self.connect() as db:
             await db.executescript(SCHEMA)
+            columns = {
+                row[1] for row in await db.execute_fetchall("PRAGMA table_info(publications)")
+            }
+            if "remote_url" not in columns:
+                await db.execute("ALTER TABLE publications ADD COLUMN remote_url TEXT")
             await db.commit()
+
+    async def record_publication(
+        self,
+        *,
+        platform: str,
+        local_path: Path,
+        remote_id: str,
+        remote_url: str | None,
+        status: str,
+        caption: str,
+    ) -> int:
+        async with await self.connect() as db:
+            asset_cursor = await db.execute(
+                """
+                INSERT INTO assets (local_path, license, owner_verified, niche, status)
+                VALUES (?, 'owned', 1, 'unspecified', 'published')
+                """,
+                (str(local_path),),
+            )
+            asset_id = asset_cursor.lastrowid
+            publication_cursor = await db.execute(
+                """
+                INSERT INTO publications (
+                    platform, asset_id, remote_id, remote_url, status, published_at, caption
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                """,
+                (platform, asset_id, remote_id, remote_url, status, caption),
+            )
+            await db.commit()
+            if publication_cursor.lastrowid is None:
+                raise RuntimeError("Database did not return a publication ID")
+            return publication_cursor.lastrowid
