@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any
+
 from .db import Database
 
 
@@ -10,24 +11,69 @@ class JobQueue:
     def __init__(self, db: Database):
         self.db = db
 
-    async def enqueue(self, kind: str, payload: dict[str, Any], run_after: str | None = None) -> int:
-        async with await self.db.connect() as conn:
+    async def enqueue(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        run_after: str | None = None,
+        *,
+        approved: bool = False,
+    ) -> int:
+        conn = await self.db.connect()
+        try:
             cur = await conn.execute(
-                "INSERT INTO jobs(kind, payload_json, run_after) VALUES (?, ?, ?)",
-                (kind, json.dumps(payload), run_after),
+                """
+                INSERT INTO jobs(kind, payload_json, run_after, approved)
+                VALUES (?, ?, ?, ?)
+                """,
+                (kind, json.dumps(payload), run_after, int(approved)),
             )
             await conn.commit()
+            if cur.lastrowid is None:
+                raise RuntimeError("Database did not return a job ID")
             return int(cur.lastrowid)
+        finally:
+            await conn.close()
 
-    async def claim(self, kind: str):
-        now = datetime.now(timezone.utc).isoformat()
-        async with await self.db.connect() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
+    async def get(self, job_id: int) -> dict[str, Any] | None:
+        conn = await self.db.connect()
+        try:
+            cur = await conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
+            row = await cur.fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            await conn.close()
+
+    async def approve(self, job_id: int) -> bool:
+        conn = await self.db.connect()
+        try:
             cur = await conn.execute(
-                '''SELECT * FROM jobs
-                   WHERE kind=? AND status='queued'
-                     AND (run_after IS NULL OR run_after <= ?)
-                   ORDER BY id LIMIT 1''',
+                """
+                UPDATE jobs
+                SET approved=1, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='queued'
+                """,
+                (job_id,),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+        finally:
+            await conn.close()
+
+    async def claim(self, kind: str, *, require_approved: bool = False):
+        now = datetime.now(timezone.utc).isoformat()
+        conn = await self.db.connect()
+        try:
+            await conn.execute("BEGIN IMMEDIATE")
+            approval_clause = "AND approved=1" if require_approved else ""
+            cur = await conn.execute(
+                f"""
+                SELECT * FROM jobs
+                WHERE kind=? AND status='queued'
+                  AND (run_after IS NULL OR run_after <= ?)
+                  {approval_clause}
+                ORDER BY id LIMIT 1
+                """,
                 (kind, now),
             )
             row = await cur.fetchone()
@@ -39,22 +85,34 @@ class JobQueue:
                 (now, now, row["id"]),
             )
             await conn.commit()
-            return dict(row)
+            claimed = dict(row)
+            claimed["status"] = "running"
+            return claimed
+        finally:
+            await conn.close()
 
     async def finish(self, job_id: int) -> None:
-        async with await self.db.connect() as conn:
+        conn = await self.db.connect()
+        try:
             await conn.execute(
                 "UPDATE jobs SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (job_id,),
             )
             await conn.commit()
+        finally:
+            await conn.close()
 
     async def fail(self, job_id: int, error: str, retry: bool = True) -> None:
         status = "queued" if retry else "failed"
-        async with await self.db.connect() as conn:
+        conn = await self.db.connect()
+        try:
             await conn.execute(
-                '''UPDATE jobs SET status=?, attempts=attempts+1,
-                   last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?''',
+                """
+                UPDATE jobs SET status=?, attempts=attempts+1,
+                last_error=?, locked_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?
+                """,
                 (status, error[:2000], job_id),
             )
             await conn.commit()
+        finally:
+            await conn.close()
