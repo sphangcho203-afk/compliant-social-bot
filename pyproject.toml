@@ -13,6 +13,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+youtube = [
+  "google-api-python-client>=2.140",
+  "google-auth>=2.34",
+  "google-auth-oauthlib>=1.2",
+]
 
 [tool.ruff]
 line-length = 100
