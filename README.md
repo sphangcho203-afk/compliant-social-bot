@@ -16,6 +16,7 @@ It supports:
 - HTTP 429 handling with exponential backoff;
 - configurable publishing cooldowns;
 - scheduled jobs, duplicate protection, dry-run mode, and approval gates;
+- continuous worker operation with stale-lock recovery and structured logs;
 - gradual performance-based content weighting.
 
 ## Development status
@@ -98,6 +99,24 @@ social-bot run-youtube-publisher --live
 ```
 
 Change the interval with `--cooldown-hours HOURS`. A value of `0` disables the cooldown. Failed jobs record their error and retry up to five total attempts.
+
+## Continuous worker
+
+Run the approved publication queue continuously in safe dry-run mode:
+
+```bash
+social-bot-worker
+```
+
+Enable official API uploads only after OAuth is configured:
+
+```bash
+social-bot-worker --live
+```
+
+The worker polls every five seconds, emits newline-delimited JSON logs, handles `SIGINT` and `SIGTERM` gracefully, and recovers `running` publication jobs whose locks are older than 15 minutes. Tune these controls with `--poll-seconds`, `--stale-after-seconds`, and `--cooldown-hours`.
+
+The included systemd unit runs the live worker under a dedicated unprivileged user. Review its paths and permissions before installation.
 
 ## YouTube analytics
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .db import Database
@@ -27,13 +27,7 @@ class JobQueue:
                 INSERT INTO jobs(kind, payload_json, run_after, approved, idempotency_key)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    kind,
-                    json.dumps(payload),
-                    run_after,
-                    int(approved),
-                    idempotency_key,
-                ),
+                (kind, json.dumps(payload), run_after, int(approved), idempotency_key),
             )
             await conn.commit()
             if cur.lastrowid is None:
@@ -59,13 +53,7 @@ class JobQueue:
                     kind, payload_json, run_after, approved, idempotency_key
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    kind,
-                    json.dumps(payload),
-                    run_after,
-                    int(approved),
-                    idempotency_key,
-                ),
+                (kind, json.dumps(payload), run_after, int(approved), idempotency_key),
             )
             created = cur.rowcount == 1
             if created:
@@ -74,10 +62,7 @@ class JobQueue:
                 job_id = int(cur.lastrowid)
             else:
                 existing = await conn.execute(
-                    """
-                    SELECT id FROM jobs
-                    WHERE kind=? AND idempotency_key=?
-                    """,
+                    "SELECT id FROM jobs WHERE kind=? AND idempotency_key=?",
                     (kind, idempotency_key),
                 )
                 row = await existing.fetchone()
@@ -111,6 +96,30 @@ class JobQueue:
             )
             await conn.commit()
             return cur.rowcount == 1
+        finally:
+            await conn.close()
+
+    async def recover_stale(self, *, stale_after_seconds: float, kind: str | None = None) -> int:
+        if stale_after_seconds < 0:
+            raise ValueError("stale_after_seconds cannot be negative")
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)).isoformat()
+        conn = await self.db.connect()
+        try:
+            kind_clause = "AND kind=?" if kind is not None else ""
+            parameters: tuple[Any, ...] = (cutoff, kind) if kind is not None else (cutoff,)
+            cur = await conn.execute(
+                f"""
+                UPDATE jobs
+                SET status='queued', locked_at=NULL,
+                    last_error=COALESCE(last_error, 'Recovered stale running job'),
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE status='running' AND locked_at IS NOT NULL AND locked_at <= ?
+                {kind_clause}
+                """,
+                parameters,
+            )
+            await conn.commit()
+            return cur.rowcount
         finally:
             await conn.close()
 
@@ -149,7 +158,7 @@ class JobQueue:
         conn = await self.db.connect()
         try:
             await conn.execute(
-                "UPDATE jobs SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                "UPDATE jobs SET status='done', locked_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (job_id,),
             )
             await conn.commit()
