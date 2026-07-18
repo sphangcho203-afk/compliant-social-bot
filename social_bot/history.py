@@ -58,7 +58,8 @@ def load_history_data(
             parameters.append(cutoff)
         if query:
             clauses.append(
-                "(LOWER(j.kind) LIKE ? OR LOWER(j.payload_json) LIKE ? OR LOWER(COALESCE(j.last_error, '')) LIKE ?)"
+                "(LOWER(j.kind) LIKE ? OR LOWER(j.payload_json) LIKE ? "
+                "OR LOWER(COALESCE(j.last_error, '')) LIKE ?)"
             )
             needle = f"%{query.lower()}%"
             parameters.extend([needle, needle, needle])
@@ -96,11 +97,7 @@ def load_history_data(
             job["privacy"] = payload.get("privacy", "")
             jobs.append(job)
 
-        counts = dict(
-            connection.execute(
-                "SELECT status, COUNT(*) FROM jobs GROUP BY status"
-            ).fetchall()
-        )
+        counts = dict(connection.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status"))
         total = sum(int(value) for value in counts.values())
         done = int(counts.get("done", 0))
         failed = int(counts.get("failed", 0))
@@ -209,12 +206,16 @@ def render_history(data: dict[str, Any]) -> str:
         for value in sorted(VALID_STATUSES)
     ]
     period_options = [
-        ("all", "All time"), ("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days")
+        ("all", "All time"),
+        ("today", "Today"),
+        ("7d", "Last 7 days"),
+        ("30d", "Last 30 days"),
     ]
     periods = "".join(
         f'<option value="{value}"{" selected" if filters["period"] == value else ""}>{label}</option>'
         for value, label in period_options
     )
+    clear_url = "/history?" + urlencode({"period": "all"})
     body = f"""
 <a href="/">← Dashboard</a><h1>Job history</h1><div class="muted">Searchable publication operations record</div>
 <div class="grid">
@@ -226,7 +227,7 @@ def render_history(data: dict[str, Any]) -> str:
 <section><form method="get" action="/history">
 <input name="q" value="{html.escape(filters['query'])}" placeholder="Search title, filename, kind, or error">
 <select name="status">{''.join(status_options)}</select><select name="period">{periods}</select>
-<button type="submit">Apply filters</button></form></section>
+<button type="submit">Apply filters</button></form><p><a href="{clear_url}">Clear filters</a></p></section>
 <section><table><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Kind</th><th>Attempts</th><th>Scheduled</th><th>Updated</th><th>Path</th></tr></thead><tbody>{history_rows}</tbody></table></section>
 """
     return _page("Job history", body)
