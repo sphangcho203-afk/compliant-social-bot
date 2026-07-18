@@ -1,0 +1,122 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
+DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
+PID_FILE="${PID_FILE:-$DATA_DIR/termux-worker.pid}"
+LOG_FILE="${LOG_FILE:-$DATA_DIR/termux-worker.log}"
+POLL_SECONDS="${POLL_SECONDS:-30}"
+
+worker_command="$VENV_DIR/bin/social-bot-worker"
+status_command="$VENV_DIR/bin/social-bot-status"
+
+mkdir -p "$DATA_DIR"
+
+read_pid() {
+    if [[ -f "$PID_FILE" ]]; then
+        cat "$PID_FILE"
+    fi
+}
+
+is_running() {
+    local pid
+    pid="$(read_pid)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+start_worker() {
+    if [[ ! -x "$worker_command" ]]; then
+        echo "Worker command not found: $worker_command" >&2
+        echo "Create the virtual environment and run: pip install -e ." >&2
+        exit 1
+    fi
+    if is_running; then
+        echo "worker=running pid=$(read_pid)"
+        return
+    fi
+
+    rm -f "$PID_FILE"
+    if command -v termux-wake-lock >/dev/null 2>&1; then
+        termux-wake-lock || true
+    fi
+
+    cd "$ROOT_DIR"
+    nohup "$worker_command" --poll-seconds "$POLL_SECONDS" "$@" >>"$LOG_FILE" 2>&1 &
+    local pid=$!
+    echo "$pid" >"$PID_FILE"
+    sleep 1
+
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "worker=started pid=$pid log=$LOG_FILE"
+    else
+        rm -f "$PID_FILE"
+        echo "Worker failed to start. Check: $LOG_FILE" >&2
+        exit 1
+    fi
+}
+
+stop_worker() {
+    if ! is_running; then
+        rm -f "$PID_FILE"
+        echo "worker=stopped"
+        return
+    fi
+
+    local pid
+    pid="$(read_pid)"
+    kill -TERM "$pid"
+    for _ in {1..20}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PID_FILE"
+            if command -v termux-wake-unlock >/dev/null 2>&1; then
+                termux-wake-unlock || true
+            fi
+            echo "worker=stopped"
+            return
+        fi
+        sleep 0.25
+    done
+
+    echo "Worker did not stop within five seconds: pid=$pid" >&2
+    exit 1
+}
+
+show_status() {
+    if is_running; then
+        echo "process=running pid=$(read_pid)"
+    else
+        echo "process=stopped"
+    fi
+    if [[ -x "$status_command" ]]; then
+        cd "$ROOT_DIR"
+        "$status_command" --stale-seconds "$((POLL_SECONDS * 2))" || true
+    fi
+}
+
+case "${1:-}" in
+    start)
+        shift
+        start_worker "$@"
+        ;;
+    stop)
+        stop_worker
+        ;;
+    restart)
+        shift
+        stop_worker
+        start_worker "$@"
+        ;;
+    status)
+        show_status
+        ;;
+    logs)
+        touch "$LOG_FILE"
+        tail -n "${LINES:-100}" -f "$LOG_FILE"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status|logs} [worker options]" >&2
+        echo "Starts in dry-run mode unless --live is explicitly supplied." >&2
+        exit 2
+        ;;
+esac
