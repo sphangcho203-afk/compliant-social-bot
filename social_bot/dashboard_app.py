@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
+from .assets_dashboard import load_assets, render_assets
 from .dashboard import load_dashboard_data, render_dashboard
 from .dashboard_control import (
     QueueActionError,
@@ -45,9 +46,24 @@ def build_handler(
                 )
                 page = page.replace(
                     '<div class="muted">Local dashboard · refreshes every 15 seconds</div>',
-                    '<div class="muted">Local dashboard · refreshes every 15 seconds · <a href="/history">Job history</a></div>',
+                    '<div class="muted">Local dashboard · refreshes every 15 seconds · '
+                    '<a href="/history">Job history</a> · '
+                    '<a href="/assets">Asset library</a></div>',
                 )
                 self._send(HTTPStatus.OK, page.encode(), "text/html; charset=utf-8")
+                return
+            if parsed.path == "/assets":
+                params = parse_qs(parsed.query)
+                data = load_assets(
+                    database_path,
+                    query=params.get("q", [""])[0],
+                    tag=params.get("tag", [""])[0],
+                )
+                self._send(
+                    HTTPStatus.OK,
+                    render_assets(data).encode(),
+                    "text/html; charset=utf-8",
+                )
                 return
             if parsed.path == "/history":
                 params = parse_qs(parsed.query)
