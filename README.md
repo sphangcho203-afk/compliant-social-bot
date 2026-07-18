@@ -64,6 +64,25 @@ social-bot publish-youtube clip.mp4 \
 
 Use `--privacy public` only after verifying the uploaded file, metadata, account, and audience settings. The command never obtains credentials from browser cookies.
 
+## Approved publication queue
+
+Queue an owned video. New jobs are unapproved by default and cannot be claimed by the publisher:
+
+```bash
+social-bot queue-youtube clip.mp4 \
+  --title "Queued upload" \
+  --caption "Owned or licensed media"
+```
+
+Approve the returned job ID, then process one approved job. Omit `--live` to validate the full flow without uploading anything:
+
+```bash
+social-bot approve-job JOB_ID
+social-bot run-youtube-publisher
+```
+
+After local OAuth is configured, use `social-bot run-youtube-publisher --live` to process one approved job as an unlisted upload. Failed jobs record their error and retry up to five total attempts.
+
 ## YouTube analytics
 
 Fetch one video's current views, likes, and comments and store a timestamped snapshot:
