@@ -119,6 +119,32 @@ The worker polls every five seconds, emits newline-delimited JSON logs, handles 
 
 The included systemd unit runs the live worker under a dedicated unprivileged user. Review its paths and permissions before installation.
 
+## Termux worker controls
+
+Android does not run systemd. The Termux control script starts the worker in the background, stores its PID, writes logs to `data/termux-worker.log`, and keeps dry-run mode as the default.
+
+```bash
+chmod +x deploy/termux/workerctl
+deploy/termux/workerctl start
+deploy/termux/workerctl status
+deploy/termux/workerctl logs
+```
+
+Stop or restart it cleanly:
+
+```bash
+deploy/termux/workerctl stop
+deploy/termux/workerctl restart
+```
+
+The default background poll interval is 30 seconds. Override it for one command with `POLL_SECONDS=60`. Pass normal worker arguments after `start` or `restart`. Real uploads remain opt-in:
+
+```bash
+POLL_SECONDS=60 deploy/termux/workerctl start --live
+```
+
+When available, the script requests a Termux wake lock while the worker is active and releases it after a clean stop. Android battery optimization can still suspend Termux, so exclude Termux from battery optimization before relying on unattended operation.
+
 ## Health and observability
 
 Inspect the worker heartbeat, queue totals, and the latest failed jobs:
@@ -159,4 +185,4 @@ GitHub Actions runs Ruff and the test suite on Python 3.12 and 3.13 for pushes a
 
 ## Deployment
 
-See `deploy/social-bot.service`. Run the service as a dedicated, unprivileged operating-system user. Never commit secrets or OAuth tokens.
+See `deploy/social-bot.service` for Linux systemd and `deploy/termux/workerctl` for Android Termux. Run the worker with the least privileges required. Never commit secrets or OAuth tokens.
