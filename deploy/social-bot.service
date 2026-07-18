@@ -1,0 +1,22 @@
+[Unit]
+Description=Compliant Social Media Automation Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=socialbot
+Group=socialbot
+WorkingDirectory=/opt/compliant-social-bot
+EnvironmentFile=/opt/compliant-social-bot/.env
+ExecStart=/opt/compliant-social-bot/.venv/bin/python -m social_bot.main
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/compliant-social-bot/data
+
+[Install]
+WantedBy=multi-user.target
