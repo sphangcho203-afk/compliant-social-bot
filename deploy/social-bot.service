@@ -9,14 +9,16 @@ User=socialbot
 Group=socialbot
 WorkingDirectory=/opt/compliant-social-bot
 EnvironmentFile=/opt/compliant-social-bot/.env
-ExecStart=/opt/compliant-social-bot/.venv/bin/python -m social_bot.main
+ExecStart=/opt/compliant-social-bot/.venv/bin/social-bot-worker --live
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/compliant-social-bot/data
+ReadWritePaths=/opt/compliant-social-bot/data /opt/compliant-social-bot/secrets
 
 [Install]
 WantedBy=multi-user.target
