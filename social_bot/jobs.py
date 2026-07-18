@@ -18,20 +18,74 @@ class JobQueue:
         run_after: str | None = None,
         *,
         approved: bool = False,
+        idempotency_key: str | None = None,
     ) -> int:
         conn = await self.db.connect()
         try:
             cur = await conn.execute(
                 """
-                INSERT INTO jobs(kind, payload_json, run_after, approved)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO jobs(kind, payload_json, run_after, approved, idempotency_key)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (kind, json.dumps(payload), run_after, int(approved)),
+                (
+                    kind,
+                    json.dumps(payload),
+                    run_after,
+                    int(approved),
+                    idempotency_key,
+                ),
             )
             await conn.commit()
             if cur.lastrowid is None:
                 raise RuntimeError("Database did not return a job ID")
             return int(cur.lastrowid)
+        finally:
+            await conn.close()
+
+    async def enqueue_unique(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+        run_after: str | None = None,
+        *,
+        approved: bool = False,
+    ) -> tuple[int, bool]:
+        conn = await self.db.connect()
+        try:
+            cur = await conn.execute(
+                """
+                INSERT OR IGNORE INTO jobs(
+                    kind, payload_json, run_after, approved, idempotency_key
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    kind,
+                    json.dumps(payload),
+                    run_after,
+                    int(approved),
+                    idempotency_key,
+                ),
+            )
+            created = cur.rowcount == 1
+            if created:
+                if cur.lastrowid is None:
+                    raise RuntimeError("Database did not return a job ID")
+                job_id = int(cur.lastrowid)
+            else:
+                existing = await conn.execute(
+                    """
+                    SELECT id FROM jobs
+                    WHERE kind=? AND idempotency_key=?
+                    """,
+                    (kind, idempotency_key),
+                )
+                row = await existing.fetchone()
+                if row is None:
+                    raise RuntimeError("Duplicate job exists but could not be loaded")
+                job_id = int(row[0])
+            await conn.commit()
+            return job_id, created
         finally:
             await conn.close()
 
@@ -72,7 +126,7 @@ class JobQueue:
                 WHERE kind=? AND status='queued'
                   AND (run_after IS NULL OR run_after <= ?)
                   {approval_clause}
-                ORDER BY id LIMIT 1
+                ORDER BY COALESCE(run_after, created_at), id LIMIT 1
                 """,
                 (kind, now),
             )
@@ -109,7 +163,7 @@ class JobQueue:
             await conn.execute(
                 """
                 UPDATE jobs SET status=?, attempts=attempts+1,
-                last_error=?, locked_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?
+                   last_error=?, locked_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """,
                 (status, error[:2000], job_id),
             )

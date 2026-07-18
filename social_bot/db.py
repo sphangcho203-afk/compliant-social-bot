@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  run_after TEXT,
  locked_at TEXT,
  last_error TEXT,
+ idempotency_key TEXT,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -97,6 +99,15 @@ class Database:
                 await db.execute(
                     "ALTER TABLE jobs ADD COLUMN approved INTEGER NOT NULL DEFAULT 0"
                 )
+            if "idempotency_key" not in job_columns:
+                await db.execute("ALTER TABLE jobs ADD COLUMN idempotency_key TEXT")
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS jobs_kind_idempotency_key
+                ON jobs(kind, idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                """
+            )
             await db.commit()
         finally:
             await db.close()
@@ -132,9 +143,44 @@ class Database:
             await db.commit()
             if publication_cursor.lastrowid is None:
                 raise RuntimeError("Database did not return a publication ID")
-            return publication_cursor.lastrowid
+            return int(publication_cursor.lastrowid)
         finally:
             await db.close()
+
+    async def seconds_until_platform_available(
+        self,
+        platform: str,
+        cooldown_hours: float,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        if cooldown_hours <= 0:
+            return 0
+
+        db = await self.connect()
+        try:
+            cursor = await db.execute(
+                """
+                SELECT published_at
+                FROM publications
+                WHERE platform=? AND status='published' AND published_at IS NOT NULL
+                ORDER BY published_at DESC, id DESC
+                LIMIT 1
+                """,
+                (platform,),
+            )
+            row = await cursor.fetchone()
+        finally:
+            await db.close()
+
+        if row is None:
+            return 0
+
+        published_at = datetime.fromisoformat(str(row[0])).replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        available_at = published_at + timedelta(hours=cooldown_hours)
+        remaining = (available_at - current).total_seconds()
+        return max(0, int(remaining + 0.999))
 
     async def list_remote_ids(self, platform: str) -> list[str]:
         db = await self.connect()
@@ -177,6 +223,6 @@ class Database:
             await db.commit()
             if cursor.lastrowid is None:
                 raise RuntimeError("Database did not return a metrics snapshot ID")
-            return cursor.lastrowid
+            return int(cursor.lastrowid)
         finally:
             await db.close()

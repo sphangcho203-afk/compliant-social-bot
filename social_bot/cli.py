@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from social_bot.db import Database
@@ -22,6 +24,24 @@ def add_auth_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=Path("secrets/youtube-token.json"),
     )
+
+
+def normalize_run_after(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("--run-after must include a timezone, such as 2026-07-20T18:00:00Z")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def publication_fingerprint(video: Path, payload: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    with video.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    return digest.hexdigest()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +80,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("private", "unlisted", "public"),
         default="unlisted",
     )
+    queue_parser.add_argument(
+        "--run-after",
+        help="Earliest publication time as an ISO-8601 timestamp with timezone",
+    )
+    queue_parser.add_argument(
+        "--allow-duplicate",
+        action="store_true",
+        help="Queue even when identical media and metadata were queued before",
+    )
     queue_parser.add_argument("--db", type=Path, default=Path("data/social_bot.db"))
 
     approve = subparsers.add_parser("approve-job", help="Approve one queued publication job")
@@ -71,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process one approved YouTube publication job",
     )
     worker.add_argument("--db", type=Path, default=Path("data/social_bot.db"))
+    worker.add_argument(
+        "--cooldown-hours",
+        type=float,
+        default=48.0,
+        help="Minimum hours between live YouTube publications; use 0 to disable",
+    )
     add_auth_arguments(worker)
     worker.add_argument(
         "--live",
@@ -129,20 +164,38 @@ async def queue_youtube(args: argparse.Namespace) -> int:
     if not video.is_file():
         raise FileNotFoundError(video)
 
+    payload = {
+        "path": str(video),
+        "title": args.title,
+        "caption": args.caption,
+        "privacy": args.privacy,
+    }
+    run_after = normalize_run_after(args.run_after)
     database = Database(args.db)
     await database.initialize()
     queue = JobQueue(database)
-    job_id = await queue.enqueue(
-        "publish_youtube",
-        {
-            "path": str(video),
+
+    if args.allow_duplicate:
+        job_id = await queue.enqueue("publish_youtube", payload, run_after)
+        created = True
+    else:
+        fingerprint_payload = {
             "title": args.title,
             "caption": args.caption,
             "privacy": args.privacy,
-        },
-    )
+        }
+        job_id, created = await queue.enqueue_unique(
+            "publish_youtube",
+            payload,
+            publication_fingerprint(video, fingerprint_payload),
+            run_after,
+        )
+
     print(f"job_id={job_id}")
+    print(f"created={str(created).lower()}")
     print("approved=false")
+    if run_after:
+        print(f"run_after={run_after}")
     return 0
 
 
@@ -158,8 +211,19 @@ async def approve_job(args: argparse.Namespace) -> int:
 
 
 async def run_youtube_publisher(args: argparse.Namespace) -> int:
+    if args.cooldown_hours < 0:
+        raise ValueError("--cooldown-hours cannot be negative")
+
     database = Database(args.db)
     await database.initialize()
+    if args.live:
+        cooldown_seconds = await database.seconds_until_platform_available(
+            "youtube", args.cooldown_hours
+        )
+        if cooldown_seconds:
+            print(f"processed=0 cooldown_seconds={cooldown_seconds}")
+            return 0
+
     queue = JobQueue(database)
     job = await queue.claim("publish_youtube", require_approved=True)
     if job is None:
