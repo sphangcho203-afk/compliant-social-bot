@@ -34,26 +34,35 @@ python -m social_bot.main
 
 FFmpeg must be installed and available on `PATH`.
 
-## YouTube adapter
+## YouTube publishing
 
-The first official API adapter supports safe dry runs by default. Dry runs require no Google credentials and never upload media.
+The official YouTube adapter and CLI are safe dry runs by default. Dry runs require no Google credentials, perform no network upload, and still write a publication receipt to SQLite.
 
-Install the optional Google client libraries only when preparing a real YouTube integration:
+```bash
+social-bot publish-youtube clip.mp4 \
+  --title "Test upload" \
+  --caption "Caption text" \
+  --db data/social_bot.db
+```
+
+For a real upload, install the optional Google clients:
 
 ```bash
 pip install -e '.[dev,youtube]'
 ```
 
-Create OAuth credentials in a Google Cloud project with the YouTube Data API v3 enabled. Keep client secrets and refresh tokens outside the repository. Real uploads should initially use `privacy_status="unlisted"` while the workflow is being verified.
+Create an OAuth desktop client in a Google Cloud project with YouTube Data API v3 enabled. Save its downloaded JSON as `secrets/youtube-client.json`. The `secrets/` directory is ignored by Git. Never commit client secrets or generated refresh tokens.
 
-```python
-from pathlib import Path
+The first live command opens Google's authorization flow, stores the token locally, uploads as **unlisted** by default, and records the returned video ID and URL:
 
-from social_bot.platforms.youtube import YouTubeAdapter
-
-adapter = YouTubeAdapter(dry_run=True)
-result = await adapter.publish_video(Path("clip.mp4"), "Caption text")
+```bash
+social-bot publish-youtube clip.mp4 \
+  --title "Verified upload" \
+  --caption "Owned or licensed media" \
+  --live
 ```
+
+Use `--privacy public` only after verifying the uploaded file, metadata, account, and audience settings. The command never obtains credentials from browser cookies.
 
 ## Continuous integration
 
