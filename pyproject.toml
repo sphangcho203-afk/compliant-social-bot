@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "compliant-social-bot"
 version = "0.1.0"
@@ -13,6 +17,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+youtube = [
+  "google-api-python-client>=2.140",
+  "google-auth>=2.34",
+  "google-auth-oauthlib>=1.2",
+]
+
+[tool.setuptools.packages.find]
+include = ["social_bot*"]
 
 [tool.ruff]
 line-length = 100
