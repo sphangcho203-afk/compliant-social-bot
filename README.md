@@ -161,6 +161,18 @@ social-bot-status --json
 
 The status command exits non-zero when the worker heartbeat is missing, stale, or degraded. The default heartbeat freshness threshold is 30 seconds and can be changed with `--stale-seconds`. Use `--failed-limit` to control how many failed jobs are displayed.
 
+## Local web dashboard
+
+Start a read-only dashboard bound to the phone or computer itself:
+
+```bash
+social-bot-dashboard
+```
+
+Open `http://127.0.0.1:8765` in a browser on the same device. The mobile-friendly page refreshes every 15 seconds and shows worker health, queue totals, recent publications, analytics snapshots, and failed jobs. JSON data is also available at `/api/status`.
+
+The dashboard listens only on localhost by default. Do not expose it to the public internet without adding authentication and HTTPS. Change the port with `--port`, and deliberately choose another bind address with `--host` only on a trusted network.
+
 ## YouTube analytics
 
 Fetch one video's current views, likes, and comments and store a timestamped snapshot:
