@@ -13,14 +13,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="social-bot")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    publish = subparsers.add_parser("publish-youtube", help="Publish a video through YouTube's official API")
+    publish = subparsers.add_parser(
+        "publish-youtube",
+        help="Publish a video through YouTube's official API",
+    )
     publish.add_argument("video", type=Path)
     publish.add_argument("--title", required=True)
     publish.add_argument("--caption", default="")
-    publish.add_argument("--privacy", choices=("private", "unlisted", "public"), default="unlisted")
+    publish.add_argument(
+        "--privacy",
+        choices=("private", "unlisted", "public"),
+        default="unlisted",
+    )
     publish.add_argument("--db", type=Path, default=Path("data/social_bot.db"))
-    publish.add_argument("--client-secrets", type=Path, default=Path("secrets/youtube-client.json"))
-    publish.add_argument("--token", type=Path, default=Path("secrets/youtube-token.json"))
+    publish.add_argument(
+        "--client-secrets",
+        type=Path,
+        default=Path("secrets/youtube-client.json"),
+    )
+    publish.add_argument(
+        "--token",
+        type=Path,
+        default=Path("secrets/youtube-token.json"),
+    )
     publish.add_argument(
         "--live",
         action="store_true",
