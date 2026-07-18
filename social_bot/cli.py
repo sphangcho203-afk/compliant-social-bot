@@ -9,7 +9,9 @@ from pathlib import Path
 
 from social_bot.db import Database
 from social_bot.jobs import JobQueue
+from social_bot.platforms.registry import PlatformRegistry
 from social_bot.platforms.youtube import YouTubeAdapter, YouTubeUploadOptions
+from social_bot.publishing import PublicationRequest, Publisher
 from social_bot.youtube_auth import load_youtube_credentials
 
 
@@ -24,6 +26,32 @@ def add_auth_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=Path("secrets/youtube-token.json"),
     )
+
+
+def build_platform_registry() -> PlatformRegistry:
+    registry = PlatformRegistry()
+    registry.register("youtube", YouTubeAdapter)
+    return registry
+
+
+def create_youtube_adapter(
+    *,
+    live: bool,
+    client_secrets: Path,
+    token: Path,
+    title: str = "Social Bot Upload",
+    privacy: str = "unlisted",
+) -> YouTubeAdapter:
+    credentials = load_youtube_credentials(client_secrets, token) if live else None
+    adapter = build_platform_registry().create(
+        "youtube",
+        credentials=credentials,
+        dry_run=not live,
+        options=YouTubeUploadOptions(title=title, privacy_status=privacy),
+    )
+    if not isinstance(adapter, YouTubeAdapter):
+        raise TypeError("YouTube registry factory returned an unexpected adapter type")
+    return adapter
 
 
 def normalize_run_after(value: str | None) -> str | None:
@@ -126,36 +154,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def publish_youtube(args: argparse.Namespace) -> int:
-    video = args.video.resolve()
-    if not video.is_file():
-        raise FileNotFoundError(video)
-
-    credentials = None
-    if args.live:
-        credentials = load_youtube_credentials(args.client_secrets, args.token)
-
-    adapter = YouTubeAdapter(
-        credentials=credentials,
-        dry_run=not args.live,
-        options=YouTubeUploadOptions(title=args.title, privacy_status=args.privacy),
-    )
-    result = await adapter.publish_video(video, args.caption)
-
     database = Database(args.db)
     await database.initialize()
-    publication_id = await database.record_publication(
-        platform=adapter.name,
-        local_path=video,
-        remote_id=result.remote_id,
-        remote_url=result.url,
-        status="published" if args.live else "dry_run",
-        caption=args.caption,
+    adapter = create_youtube_adapter(
+        live=args.live,
+        client_secrets=args.client_secrets,
+        token=args.token,
+        title=args.title,
+        privacy=args.privacy,
+    )
+    receipt = await Publisher(database, adapter).publish(
+        PublicationRequest(path=args.video, caption=args.caption, live=args.live)
     )
 
-    print(f"publication_id={publication_id}")
-    print(f"remote_id={result.remote_id}")
-    if result.url:
-        print(f"url={result.url}")
+    print(f"publication_id={receipt.publication_id}")
+    print(f"remote_id={receipt.result.remote_id}")
+    if receipt.result.url:
+        print(f"url={receipt.result.url}")
     return 0
 
 
@@ -232,45 +247,38 @@ async def run_youtube_publisher(args: argparse.Namespace) -> int:
 
     try:
         payload = json.loads(job["payload_json"])
-        path = Path(payload["path"])
-        if not path.is_file():
-            raise FileNotFoundError(path)
-
-        credentials = None
-        if args.live:
-            credentials = load_youtube_credentials(args.client_secrets, args.token)
-        adapter = YouTubeAdapter(
-            credentials=credentials,
-            dry_run=not args.live,
-            options=YouTubeUploadOptions(
-                title=str(payload["title"]),
-                privacy_status=str(payload.get("privacy", "unlisted")),
-            ),
+        adapter = create_youtube_adapter(
+            live=args.live,
+            client_secrets=args.client_secrets,
+            token=args.token,
+            title=str(payload["title"]),
+            privacy=str(payload.get("privacy", "unlisted")),
         )
-        result = await adapter.publish_video(path, str(payload.get("caption", "")))
-        publication_id = await database.record_publication(
-            platform=adapter.name,
-            local_path=path,
-            remote_id=result.remote_id,
-            remote_url=result.url,
-            status="published" if args.live else "dry_run",
-            caption=str(payload.get("caption", "")),
+        receipt = await Publisher(database, adapter).publish(
+            PublicationRequest(
+                path=Path(payload["path"]),
+                caption=str(payload.get("caption", "")),
+                live=args.live,
+            )
         )
         await queue.finish(int(job["id"]))
     except Exception as exc:
         await queue.fail(int(job["id"]), repr(exc), retry=int(job["attempts"]) < 4)
         raise
 
-    print(f"processed=1 job_id={job['id']} publication_id={publication_id}")
-    print(f"remote_id={result.remote_id}")
-    if result.url:
-        print(f"url={result.url}")
+    print(f"processed=1 job_id={job['id']} publication_id={receipt.publication_id}")
+    print(f"remote_id={receipt.result.remote_id}")
+    if receipt.result.url:
+        print(f"url={receipt.result.url}")
     return 0
 
 
 async def sync_youtube_analytics(args: argparse.Namespace) -> int:
-    credentials = load_youtube_credentials(args.client_secrets, args.token)
-    adapter = YouTubeAdapter(credentials=credentials, dry_run=False)
+    adapter = create_youtube_adapter(
+        live=True,
+        client_secrets=args.client_secrets,
+        token=args.token,
+    )
     database = Database(args.db)
     await database.initialize()
 
