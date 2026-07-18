@@ -17,6 +17,7 @@ It supports:
 - configurable publishing cooldowns;
 - scheduled jobs, duplicate protection, dry-run mode, and approval gates;
 - continuous worker operation with stale-lock recovery and structured logs;
+- persistent worker heartbeats, queue health, and failed-job inspection;
 - gradual performance-based content weighting.
 
 ## Development status
@@ -117,6 +118,22 @@ social-bot-worker --live
 The worker polls every five seconds, emits newline-delimited JSON logs, handles `SIGINT` and `SIGTERM` gracefully, and recovers `running` publication jobs whose locks are older than 15 minutes. Tune these controls with `--poll-seconds`, `--stale-after-seconds`, and `--cooldown-hours`.
 
 The included systemd unit runs the live worker under a dedicated unprivileged user. Review its paths and permissions before installation.
+
+## Health and observability
+
+Inspect the worker heartbeat, queue totals, and the latest failed jobs:
+
+```bash
+social-bot-status
+```
+
+For monitoring systems, request machine-readable output:
+
+```bash
+social-bot-status --json
+```
+
+The status command exits non-zero when the worker heartbeat is missing, stale, or degraded. The default heartbeat freshness threshold is 30 seconds and can be changed with `--stale-seconds`. Use `--failed-limit` to control how many failed jobs are displayed.
 
 ## YouTube analytics
 
