@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from pathlib import Path
 
 import structlog
@@ -9,12 +10,14 @@ import structlog
 from .cli import run_youtube_publisher
 from .db import Database
 from .jobs import JobQueue
+from .observability import ObservabilityStore
 from .worker import ContinuousWorker, WorkerOptions, install_signal_handlers
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="social-bot-worker")
     parser.add_argument("--db", type=Path, default=Path("data/social_bot.db"))
+    parser.add_argument("--worker-name", default="youtube-publisher")
     parser.add_argument(
         "--poll-seconds",
         type=float,
@@ -71,9 +74,19 @@ async def async_main(argv: list[str] | None = None) -> int:
     database = Database(args.db)
     await database.initialize()
     queue = JobQueue(database)
+    observability = ObservabilityStore(database)
+    await observability.initialize()
 
     async def process_once() -> int:
         return await run_youtube_publisher(args)
+
+    async def heartbeat(state: str, details: str | None) -> None:
+        await observability.heartbeat(
+            args.worker_name,
+            state=state,
+            pid=os.getpid(),
+            details=details,
+        )
 
     worker = ContinuousWorker(
         queue,
@@ -82,6 +95,7 @@ async def async_main(argv: list[str] | None = None) -> int:
             poll_seconds=args.poll_seconds,
             stale_after_seconds=args.stale_after_seconds,
         ),
+        heartbeat=heartbeat,
     )
     install_signal_handlers(worker)
     await worker.run()
