@@ -20,14 +20,35 @@ from .dashboard_control import (
     retry_job,
 )
 from .history import load_history_data, load_job_detail, render_history, render_job_detail
+from .youtube_dashboard_auth import (
+    OAuthStateStore,
+    YouTubeOAuthError,
+    begin_youtube_login,
+    disconnect_youtube,
+    finish_youtube_login,
+    load_youtube_connection,
+    render_youtube_login_page,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_CLIENT_SECRETS = Path("secrets/youtube-client.json")
+DEFAULT_YOUTUBE_TOKEN = Path("secrets/youtube-token.json")
 
 
 def build_handler(
-    database_path: Path, worker_name: str, control_token: str | None = None
+    database_path: Path,
+    worker_name: str,
+    control_token: str | None = None,
+    *,
+    client_secrets_path: Path = DEFAULT_CLIENT_SECRETS,
+    youtube_token_path: Path = DEFAULT_YOUTUBE_TOKEN,
+    oauth_redirect_base: str = "http://127.0.0.1:8765",
+    oauth_state_store: OAuthStateStore | None = None,
 ) -> type[BaseHTTPRequestHandler]:
+    state_store = oauth_state_store or OAuthStateStore()
+    redirect_uri = f"{oauth_redirect_base.rstrip('/')}/youtube/callback"
+
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -49,9 +70,37 @@ def build_handler(
                     '<div class="muted">Local dashboard · refreshes every 15 seconds</div>',
                     '<div class="muted">Local dashboard · refreshes every 15 seconds · '
                     '<a href="/history">Job history</a> · '
-                    '<a href="/assets">Asset library</a></div>',
+                    '<a href="/assets">Asset library</a> · '
+                    '<a href="/youtube">YouTube login</a></div>',
                 )
                 self._send(HTTPStatus.OK, page.encode(), "text/html; charset=utf-8")
+                return
+            if parsed.path == "/youtube":
+                params = parse_qs(parsed.query)
+                connection = load_youtube_connection(client_secrets_path, youtube_token_path)
+                page = render_youtube_login_page(
+                    connection,
+                    controls_enabled=bool(control_token),
+                    message=params.get("message", [""])[0],
+                )
+                self._send(HTTPStatus.OK, page.encode(), "text/html; charset=utf-8")
+                return
+            if parsed.path == "/youtube/callback":
+                authorization_response = redirect_uri
+                if parsed.query:
+                    authorization_response += f"?{parsed.query}"
+                try:
+                    finish_youtube_login(
+                        client_secrets_path,
+                        youtube_token_path,
+                        redirect_uri,
+                        authorization_response,
+                        state_store,
+                    )
+                    message = "YouTube account connected successfully"
+                except YouTubeOAuthError as exc:
+                    message = f"YouTube login failed: {exc}"
+                self._redirect(f"/youtube?message={quote(message)}")
                 return
             if parsed.path == "/assets":
                 params = parse_qs(parsed.query)
@@ -122,9 +171,32 @@ def build_handler(
                 return
 
             path = urlparse(self.path).path
+            if path == "/youtube/login":
+                try:
+                    authorization_url = begin_youtube_login(
+                        client_secrets_path,
+                        redirect_uri,
+                        state_store,
+                    )
+                except YouTubeOAuthError as exc:
+                    self._redirect(
+                        f"/youtube?message={quote(f'YouTube login failed: {exc}')}"
+                    )
+                    return
+                self._redirect(authorization_url)
+                return
+
             redirect_path = "/"
             try:
-                if path == "/jobs/create":
+                if path == "/youtube/disconnect":
+                    removed = disconnect_youtube(youtube_token_path)
+                    message = (
+                        "Local YouTube login removed"
+                        if removed
+                        else "No local YouTube login was stored"
+                    )
+                    redirect_path = "/youtube"
+                elif path == "/jobs/create":
                     job_id, created = create_youtube_job(database_path, form)
                     message = (
                         f"Job {job_id} {'created' if created else 'already exists'}; "
@@ -161,13 +233,19 @@ def build_handler(
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
                     message = f"Job {job_id} {action}d"
-            except (QueueActionError, ValueError) as exc:
+            except (QueueActionError, ValueError, OSError) as exc:
                 message = f"Action failed: {exc}"
                 if path.startswith("/assets/"):
                     redirect_path = "/assets"
+                elif path.startswith("/youtube/"):
+                    redirect_path = "/youtube"
 
+            self._redirect(f"{redirect_path}?message={quote(message)}")
+
+        def _redirect(self, location: str) -> None:
             self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", f"{redirect_path}?message={quote(message)}")
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
 
         def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
@@ -193,9 +271,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--control-token",
         default=os.environ.get("SOCIAL_BOT_CONTROL_TOKEN"),
-        help="Enable protected queue write actions with this token",
+        help="Enable protected queue and OAuth write actions with this token",
+    )
+    parser.add_argument(
+        "--client-secrets",
+        type=Path,
+        default=DEFAULT_CLIENT_SECRETS,
+        help="Google OAuth client JSON file",
+    )
+    parser.add_argument(
+        "--token",
+        type=Path,
+        default=DEFAULT_YOUTUBE_TOKEN,
+        help="Private local YouTube OAuth token file",
+    )
+    parser.add_argument(
+        "--oauth-redirect-base",
+        help="Public browser base URL for the OAuth callback; defaults to dashboard host and port",
     )
     return parser
+
+
+def _resolve_oauth_redirect_base(host: str, port: int, configured: str | None) -> str:
+    base = (configured or f"http://{host}:{port}").rstrip("/")
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("--oauth-redirect-base must be an absolute HTTP or HTTPS URL")
+    if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise ValueError("--oauth-redirect-base cannot contain a path, query, or fragment")
+    if parsed.scheme == "http" and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("HTTP OAuth callbacks are allowed only on a loopback address")
+    return base
 
 
 def main() -> None:
@@ -204,11 +310,25 @@ def main() -> None:
         raise ValueError("--port must be between 1 and 65535")
     if args.control_token is not None and len(args.control_token) < 12:
         raise ValueError("--control-token must be at least 12 characters")
+    oauth_redirect_base = _resolve_oauth_redirect_base(
+        args.host,
+        args.port,
+        args.oauth_redirect_base,
+    )
     server = ThreadingHTTPServer(
-        (args.host, args.port), build_handler(args.db, args.worker_name, args.control_token)
+        (args.host, args.port),
+        build_handler(
+            args.db,
+            args.worker_name,
+            args.control_token,
+            client_secrets_path=args.client_secrets,
+            youtube_token_path=args.token,
+            oauth_redirect_base=oauth_redirect_base,
+        ),
     )
     mode = "controls-enabled" if args.control_token else "read-only"
     print(f"dashboard=http://{args.host}:{args.port} mode={mode}")
+    print(f"youtube_oauth_callback={oauth_redirect_base}/youtube/callback")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
