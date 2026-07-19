@@ -1,10 +1,39 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 YOUTUBE_READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+YOUTUBE_SCOPES = (YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READ_SCOPE)
+
+
+def save_youtube_credentials(credentials: Any, token_path: Path) -> None:
+    """Persist Google OAuth credentials as private local state.
+
+    The temporary-file replacement avoids leaving a partially written token if the
+    process is interrupted. Permissions are restricted to the current OS user.
+    """
+
+    token_path = token_path.expanduser()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(token_path.parent, 0o700)
+    except OSError:
+        pass
+
+    temporary_path = token_path.with_name(f".{token_path.name}.tmp")
+    temporary_path.write_text(credentials.to_json(), encoding="utf-8")
+    try:
+        os.chmod(temporary_path, 0o600)
+    except OSError:
+        pass
+    temporary_path.replace(token_path)
+    try:
+        os.chmod(token_path, 0o600)
+    except OSError:
+        pass
 
 
 def load_youtube_credentials(
@@ -18,6 +47,7 @@ def load_youtube_credentials(
     The token file is local state and must never be committed. Interactive browser
     authorization is used only when no valid refreshable token is available.
     """
+
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -27,7 +57,7 @@ def load_youtube_credentials(
             "Install the YouTube extra with: pip install -e '.[youtube]'"
         ) from exc
 
-    scopes = [YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READ_SCOPE]
+    scopes = list(YOUTUBE_SCOPES)
     credentials = None
 
     if token_path.is_file():
@@ -45,6 +75,5 @@ def load_youtube_credentials(
         flow = InstalledAppFlow.from_client_secrets_file(str(client_secrets_path), scopes)
         credentials = flow.run_local_server(port=0)
 
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(credentials.to_json(), encoding="utf-8")
+    save_youtube_credentials(credentials, token_path)
     return credentials
