@@ -121,29 +121,126 @@ class Database:
         remote_url: str | None,
         status: str,
         caption: str,
+        asset_id: int | None = None,
     ) -> int:
+        resolved_path = local_path.expanduser().resolve()
         db = await self.connect()
         try:
-            asset_cursor = await db.execute(
-                """
-                INSERT INTO assets (local_path, license, owner_verified, niche, status)
-                VALUES (?, 'owned', 1, 'unspecified', 'published')
-                """,
-                (str(local_path),),
-            )
-            asset_id = asset_cursor.lastrowid
+            publication_asset_id: int
+            if asset_id is None:
+                asset_cursor = await db.execute(
+                    """
+                    INSERT INTO assets (local_path, license, owner_verified, niche, status)
+                    VALUES (?, 'owned', 1, 'unspecified', 'published')
+                    """,
+                    (str(resolved_path),),
+                )
+                if asset_cursor.lastrowid is None:
+                    raise RuntimeError("Database did not return an asset ID")
+                publication_asset_id = int(asset_cursor.lastrowid)
+            else:
+                asset_cursor = await db.execute(
+                    "SELECT local_path, owner_verified FROM assets WHERE id=?",
+                    (asset_id,),
+                )
+                asset = await asset_cursor.fetchone()
+                if asset is None:
+                    raise LookupError(f"Asset not found: {asset_id}")
+                if not bool(asset["owner_verified"]):
+                    raise PermissionError(
+                        f"Asset {asset_id} does not have verified publishing rights"
+                    )
+                stored_path = Path(str(asset["local_path"])).expanduser().resolve()
+                if stored_path != resolved_path:
+                    raise ValueError(
+                        f"Asset {asset_id} path does not match publication path: {resolved_path}"
+                    )
+                publication_asset_id = asset_id
+
             publication_cursor = await db.execute(
                 """
                 INSERT INTO publications (
                     platform, asset_id, remote_id, remote_url, status, published_at, caption
                 ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 """,
-                (platform, asset_id, remote_id, remote_url, status, caption),
+                (
+                    platform,
+                    publication_asset_id,
+                    remote_id,
+                    remote_url,
+                    status,
+                    caption,
+                ),
             )
+            if status == "published":
+                await db.execute(
+                    "UPDATE assets SET status='published' WHERE id=?",
+                    (publication_asset_id,),
+                )
             await db.commit()
             if publication_cursor.lastrowid is None:
                 raise RuntimeError("Database did not return a publication ID")
             return int(publication_cursor.lastrowid)
+        finally:
+            await db.close()
+
+    async def validate_asset_path(self, asset_id: int, local_path: Path) -> None:
+        resolved_path = local_path.expanduser().resolve()
+        db = await self.connect()
+        try:
+            cursor = await db.execute(
+                "SELECT local_path, owner_verified FROM assets WHERE id=?",
+                (asset_id,),
+            )
+            asset = await cursor.fetchone()
+            if asset is None:
+                raise LookupError(f"Asset not found: {asset_id}")
+            if not bool(asset["owner_verified"]):
+                raise PermissionError(
+                    f"Asset {asset_id} does not have verified publishing rights"
+                )
+            stored_path = Path(str(asset["local_path"])).expanduser().resolve()
+            if stored_path != resolved_path:
+                raise ValueError(
+                    f"Asset {asset_id} path does not match publication path: {resolved_path}"
+                )
+        finally:
+            await db.close()
+
+    async def find_asset_id_by_path(self, local_path: Path) -> int | None:
+        resolved_path = str(local_path.expanduser().resolve())
+        db = await self.connect()
+        try:
+            columns_cursor = await db.execute("PRAGMA table_info(assets)")
+            columns = {str(row[1]) for row in await columns_cursor.fetchall()}
+            if "content_hash" not in columns:
+                return None
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM assets
+                WHERE local_path=? AND owner_verified=1 AND content_hash IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (resolved_path,),
+            )
+            row = await cursor.fetchone()
+            return None if row is None else int(row["id"])
+        finally:
+            await db.close()
+
+    async def publication_asset_id(self, publication_id: int) -> int:
+        db = await self.connect()
+        try:
+            cursor = await db.execute(
+                "SELECT asset_id FROM publications WHERE id=?",
+                (publication_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise LookupError(f"Publication not found: {publication_id}")
+            return int(row["asset_id"])
         finally:
             await db.close()
 
