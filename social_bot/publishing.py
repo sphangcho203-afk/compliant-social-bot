@@ -12,11 +12,13 @@ class PublicationRequest:
     path: Path
     caption: str = ""
     live: bool = False
+    asset_id: int | None = None
 
 
 @dataclass(frozen=True)
 class PublicationReceipt:
     publication_id: int
+    asset_id: int
     platform: str
     result: PublishResult
     status: str
@@ -35,9 +37,15 @@ class Publisher:
         self._adapter = adapter
 
     async def publish(self, request: PublicationRequest) -> PublicationReceipt:
-        path = request.path.resolve()
+        path = request.path.expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(path)
+
+        asset_id = request.asset_id
+        if asset_id is None:
+            asset_id = await self._database.find_asset_id_by_path(path)
+        if asset_id is not None:
+            await self._database.validate_asset_path(asset_id, path)
 
         result = await self._adapter.publish_video(path, request.caption)
         status = "published" if request.live else "dry_run"
@@ -48,9 +56,16 @@ class Publisher:
             remote_url=result.url,
             status=status,
             caption=request.caption,
+            asset_id=asset_id,
+        )
+        receipt_asset_id = (
+            asset_id
+            if asset_id is not None
+            else await self._database.publication_asset_id(publication_id)
         )
         return PublicationReceipt(
             publication_id=publication_id,
+            asset_id=receipt_asset_id,
             platform=self._adapter.name,
             result=result,
             status=status,
