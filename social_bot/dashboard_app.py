@@ -15,6 +15,7 @@ from .dashboard_control import (
     QueueActionError,
     approve_job,
     cancel_job,
+    create_asset_youtube_job,
     create_youtube_job,
     retry_job,
 )
@@ -61,7 +62,11 @@ def build_handler(
                 )
                 self._send(
                     HTTPStatus.OK,
-                    render_assets(data).encode(),
+                    render_assets(
+                        data,
+                        controls_enabled=bool(control_token),
+                        message=params.get("message", [""])[0],
+                    ).encode(),
                     "text/html; charset=utf-8",
                 )
                 return
@@ -117,6 +122,7 @@ def build_handler(
                 return
 
             path = urlparse(self.path).path
+            redirect_path = "/"
             try:
                 if path == "/jobs/create":
                     job_id, created = create_youtube_job(database_path, form)
@@ -124,6 +130,20 @@ def build_handler(
                         f"Job {job_id} {'created' if created else 'already exists'}; "
                         "approval required"
                     )
+                elif path.startswith("/assets/") and path.endswith("/queue"):
+                    parts = path.strip("/").split("/")
+                    if len(parts) != 3 or parts[0] != "assets" or parts[2] != "queue":
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
+                    asset_id = int(parts[1])
+                    job_id, created = create_asset_youtube_job(database_path, asset_id, form)
+                    message = (
+                        f"Asset {asset_id} queued as job {job_id}"
+                        if created
+                        else f"Asset {asset_id} already has matching job {job_id}"
+                    )
+                    message += "; approval required"
+                    redirect_path = "/assets"
                 else:
                     parts = path.strip("/").split("/")
                     if len(parts) != 3 or parts[0] != "jobs":
@@ -143,9 +163,11 @@ def build_handler(
                     message = f"Job {job_id} {action}d"
             except (QueueActionError, ValueError) as exc:
                 message = f"Action failed: {exc}"
+                if path.startswith("/assets/"):
+                    redirect_path = "/assets"
 
             self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", f"/?message={quote(message)}")
+            self.send_header("Location", f"{redirect_path}?message={quote(message)}")
             self.end_headers()
 
         def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
